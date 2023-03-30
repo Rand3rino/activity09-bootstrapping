@@ -6,3 +6,129 @@ output: github_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+
+### Libraries
+```{r libraries, message=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(GGally)
+```
+
+### Create the Data
+```{r create-the-data}
+# Create a data frame/tibble named sim_dat
+sim_dat <- tibble(
+# Create 20 values that are uniformly distributed between -5 and 5
+  x1 = runif(20, -5, 5),
+# Create 20 values that are uniformly distributed between 0 and 100
+  x2 = runif(20, 0, 100),
+# Create 20 values using the Bernoulli distribution (coin flip)
+  x3 = rbinom(20, 1, 0.5)
+  )
+
+b0 <- 2
+b1 <- 0.25
+b2 <- -0.5
+b3 <- 1
+sigma <- 1.5
+
+errors <- rnorm(20, 0, sigma)
+
+sim_dat <- sim_dat %>% 
+  mutate(
+    y = b0 + b1*x1 + b2*x2 + b3*x3 + errors,
+    x3 = case_when(
+      x3 == 0 ~ "No",
+      TRUE ~ "Yes"
+      )
+    )
+```
+
+The baseline model is `y = b0 + b1*x1 + b2*x2 + b3*x3` prior to the mutation where we introduce normalized errors using the `sigma` value.
+
+### Visualize Variable Pairs
+```{r visualize-pairs, message=FALSE}
+sim_dat %>% 
+  ggpairs() + 
+  theme_bw()
+```
+
+### Traditional MLR Model
+```{r trad-mlr}
+mlr_fit <- linear_reg() %>%
+  set_mode("regression") %>% 
+  set_engine("lm") %>% 
+  fit(y ~ x1 + x2 + x3, data = sim_dat)
+
+# Also include the confidence intervals for our estimated slope parameters
+mlr_summary <- tidy(mlr_fit, conf.int = TRUE)
+mlr_summary
+```
+Comparing the estimates for the intercept and `x` variables. I see that the MLR model has a y-intercept of 2.25 instead of 2. An `x1` coefficient of .1 instead of 0.25, matching `x2` coefficients, and `x3` coefficient of .9 instead of 1.
+
+### Bootstrapping 
+```{r bootstrapping}
+# Set a random seed value so we can obtain the same "random" results
+set.seed(631)
+
+# Generate the 2000 bootstrap samples
+boot_samps <- sim_dat %>% 
+  bootstraps(times = 2000)
+
+boot_samps
+```
+
+### Fit MLR to Bootstraps
+```{r fit-MLR}
+
+# Create a function that fits a fixed MLR model to one split dataset
+fit_mlr_boots <- function(split) {
+  lm(y ~ x1 + x2 + x3, data = analysis(split))
+}
+
+# Fit the model to each split and store the information
+# Also, obtain the tidy model information
+boot_models <- boot_samps %>% 
+  mutate(
+    model = map(splits, fit_mlr_boots),
+    coef_info = map(model, tidy)
+    )
+
+boots_coefs <- boot_models %>% 
+  unnest(coef_info)
+
+boots_coefs
+```
+### Estimates using 95% Confidence Interval
+```{r calculate-confidence-interval}
+boot_int <- int_pctl(boot_models, statistics = coef_info, alpha = 0.05)
+boot_int
+```
+
+### Variability of Estimates
+```{r variability}
+ggplot(boots_coefs, aes(x = estimate)) +
+  geom_histogram(bins = 30) +
+  facet_wrap( ~ term, scales = "free") +
+  geom_vline(data = boot_int, aes(xintercept = .lower), col = "blue") +
+  geom_vline(data = boot_int, aes(xintercept = .upper), col = "blue") +
+  geom_vline(data = boot_int, aes(xintercept = .estimate), col = "green") +
+  theme_bw()
+```
+
+Comparing the estimates for the intercepts and `x` variables. I see that the MLR model using bootstrapping has a y-intercept of 2.25 instead of 2. An `x1` coefficient of .09 instead of 0.25, matching `x2` coefficients, and matching `x3` coefficients. 
+
+Comparing against the MLR model that didn't use bootstrapping, the intercept and coefficient for `x3` was closer to the population model in the bootstrapping model, but the coefficient for `x1` was farther away.
+
+### Challenge: Comparison Lines
+```{r comparison to traditional}
+ggplot(boots_coefs, aes(x = estimate)) +
+  geom_histogram(bins = 30) +
+  facet_wrap( ~ term, scales = "free") +
+  geom_vline(data = boot_int, aes(xintercept = .lower), col = "blue") +
+  geom_vline(data = boot_int, aes(xintercept = .upper), col = "blue") + 
+  geom_vline(data = mlr_summary, aes(xintercept = conf.low), col = "red") +
+  geom_vline(data = mlr_summary, aes(xintercept = conf.high), col = "red") +
+  theme_bw()
+```
+
